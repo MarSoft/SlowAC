@@ -5,11 +5,8 @@ const int pinIn = 0;       // Вход от датчика Холла мотор
 const int pinLed = 1;      // Встроенный светодиод-тахометр (PB1)
 const int pinOut = 4;      // Выход частоты на плату кондиционера (PB4)
 
-// Параметры алгоритма
-const float K_target = 1.6;        // Максимальный коэффициент замедления
-const float safety_minimum = 28.0; // Частота (Гц), ниже которой мотор может встать
-const float safety_zone = 35.0;    // Частота (Гц), где начинаем снижать "обман"
-const unsigned long start_delay = 4000; // Стартовая задержка (4 секунды)
+// Стартовая задержка (4 секунды)
+const unsigned long start_delay = 4000; 
 
 // Переменные для замера частоты
 volatile unsigned long last_micros = 0;
@@ -22,24 +19,22 @@ unsigned long last_out_toggle = 0;
 bool out_state = false;
 unsigned long boot_time = 0;
 
-// Переменные для фильтрации (сглаживания) частоты
+// Переменные для фильтрации частоты
 float smoothed_freq = 45.0; 
-const float alpha = 0.15; // Коэффициент фильтрации (чем меньше, тем плавнее)
+const float alpha = 0.15; 
 
-// Обработчик прерывания по изменению уровня на входе мотора (PB0)
 void onMotorPulse() {
   unsigned long current_micros = micros();
   unsigned long duration = current_micros - last_micros;
   
-  if (duration > 2500) { // Защита от дребезга контактов (>200 Гц)
-    real_period = duration * 2; // Полный период меандра
+  if (duration > 2500) { 
+    real_period = duration * 2; 
     last_micros = current_micros;
     
-    // Считаем импульсы для визуального тахометры
     pulse_count++;
     if (pulse_count >= 10) {
       pulse_count = 0;
-      led_trigger = true; // Сигнал для loop() переключить светодиод
+      led_trigger = true; 
     }
   }
 }
@@ -53,7 +48,6 @@ void setup() {
   
   digitalWrite(pinLed, LOW);
   
-  // Настройка прерываний PCINT0 на пине PB0
   GIMSK |= (1 << PCIE);   
   PCMSK |= (1 << PCINT0); 
   sei();                  
@@ -67,44 +61,42 @@ void loop() {
   unsigned long current_millis = millis();
   unsigned long current_micros = micros();
 
-  // 1. Аппаратный визуальный тахометр (каждый 10-й импульс зажигает/гасит LED)
+  // Визуальный тахометр
   if (led_trigger) {
     led_trigger = false;
     digitalWrite(pinLed, !digitalRead(pinLed));
   }
 
-  // Защита от полной остановки (если импульсов нет дольше 250 мс)
+  // Защита от полной остановки
   if (current_micros - last_micros > 250000) {
     real_period = 0;
-    digitalWrite(pinLed, LOW); // Гасим светодиод, если мотор стоит
+    digitalWrite(pinLed, LOW); 
   }
 
-  // 2. Расчет текущей частоты и коэффициента
+  // Расчет выходного периода
   if (real_period == 0) {
     out_period = 0;
   } else if (current_millis - boot_time < start_delay) {
-    // Период старта: транслируем частоту 1 в 1
-    out_period = real_period;
+    out_period = real_period; // Старт 1 в 1
   } else {
-    // Рабочий режим: считаем реальную частоту в Гц
     float real_freq = 1000000.0 / (float)real_period;
     
-    // Сглаживаем частоту экспоненциальным фильтром
+    // Сглаживаем частоту
     smoothed_freq = (alpha * real_freq) + ((1.0 - alpha) * smoothed_freq);
     
-    // Реализация ВАШЕГО адаптивного алгоритма защиты
-    float K = K_target;
-    if (smoothed_freq < safety_zone) {
-      float factor = (smoothed_freq - safety_minimum) / (safety_zone - safety_minimum);
-      if (factor < 0.0) factor = 0.0;
-      K = 1.0 + (K_target - 1.0) * factor; // Плавно снижаем K вплоть до 1.0
-    }
+    // НЕЛИНЕЙНЫЙ АЛГОРИТМ:
+    // На 45Гц (минимум) К = 1.85 (сильный обман)
+    // На 80Гц (максимум) К = 1.15 (слабый обман)
+    float K = 1.85 - ((smoothed_freq - 45.0) * (1.85 - 1.15) / (80.0 - 45.0));
     
-    // Рассчитываем выходной измененный период для платы
+    // Безопасные рамки для К
+    if (K > 1.95) K = 1.95;
+    if (K < 1.10) K = 1.10;
+    
     out_period = (unsigned long)((float)real_period / K);
   }
 
-  // 3. Безиндукционная генерация меандра на пине P4
+  // Генерация меандра на P4
   if (out_period > 0) {
     unsigned long half_period = out_period / 2;
     if (current_micros - last_out_toggle >= half_period) {
